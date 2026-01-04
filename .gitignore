@@ -1,0 +1,31 @@
+# Virtual environments
+lamaml/
+
+# Large model files (use Git LFS if needed)
+lang_model/*.pth
+maml_model/*.pth
+lang_policy_model/*.pth
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Temporary files
+*.tmp
+*.swp
+
+# Jupyter notebooks (if not needed)
+*.ipynb_checkpoints/
+
+# Data files (if large)
+*.pkl
+*.npy
+*.h5
