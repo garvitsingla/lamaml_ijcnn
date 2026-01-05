@@ -11,15 +11,15 @@ from environment import (GoToLocalMissionEnv,
                          OpenDoorsOrderMissionEnv,
                          ActionObjDoorMissionEnv,
                          PutNextLocalMissionEnv, _aug_phrase)
-from sampler_lang import BabyAIMissionTaskWrapper, MissionEncoder, MissionParamAdapter
-import sampler_lang_policy
+from sampler_lang import BabyAIMissionTaskWrapper, SentenceMissionEncoder, MissionParamAdapter
 import sampler_lang
 import sampler_maml
+import sampler_lang_policy
 from maml_rl.policies.categorical_mlp import CategoricalMLPPolicy
-import pickle
 from maml_rl.utils.reinforcement_learning import reinforce_loss
 from maml_rl.episode import BatchEpisodes
 from maml_rl.baseline import LinearFeatureBaseline
+from collections import OrderedDict
 import argparse
 import builtins, io
 from contextlib import contextmanager, redirect_stdout, redirect_stderr
@@ -54,8 +54,8 @@ p.add_argument("--env", dest="env_name",
                choices=["GoToLocal","PickupDist","GoToObjDoor","GoToOpen","OpenDoor",
                         "OpenDoorLoc","OpenDoorsOrder","ActionObjDoor","PutNextLocal"],
                default="GoToLocal")
-p.add_argument("--room-size", type=int, default=6)
-p.add_argument("--num-dists", type=int, default=6)
+p.add_argument("--room-size", type=int, default=7)
+p.add_argument("--num-dists", type=int, default=3)
 p.add_argument("--max-steps", type=int, default=300)
 p.add_argument("--delta-theta", type=int, default=0.7)
 p.add_argument("--skip-random", action="store_true",
@@ -96,7 +96,6 @@ ACTION_OBJ_DOOR_MISSIONS = (
     [f"go to the {c} door"   for c in DOOR_COLORS] +
     [f"open a {c} door"      for c in DOOR_COLORS]
 )
-
 
 PUTNEXT_MISSIONS = [
     _aug_phrase(c1, t1, c2, t2)
@@ -161,19 +160,8 @@ print(f"env name {env}\n")
 print(f"room_size: {room_size}\nnum_dists: {num_dists}\nmax_steps: {max_steps}\n")
 
 
-# restore saved lang-adapted policy 
-ckpt = torch.load(f"lang_model/lang_policy_{env_name}.pth", map_location=device)
-with open(f"lang_model/vectorizer_lang_{env_name}.pkl", "rb") as f:
-    vectorizer = pickle.load(f)
 
-
-sampler_lang.vectorizer = vectorizer  
-mission_encoder_output_dim = 32
-sampler_lang.mission_encoder = MissionEncoder(len(sampler_lang.vectorizer.get_feature_names_out()), 32, 64, mission_encoder_output_dim).to(device)
-sampler_lang.mission_encoder.load_state_dict(ckpt["mission_encoder"])
-sampler_lang.mission_encoder.eval()
-mission_encoder = sampler_lang.mission_encoder
-preprocess_obs = sampler_lang.preprocess_obs
+ckpt = torch.load(f"lang_model/lang_{env_name}.pth", map_location=device)
 
 dummy_obs, _ = env.reset()
 input_size_lang = sampler_lang.preprocess_obs(dummy_obs).shape[0]
@@ -192,29 +180,58 @@ policy_lang.load_state_dict(ckpt["policy"])
 policy_lang.eval()
 policy_param_shapes = [p.shape for p in policy_lang.parameters()]
 
+# Mission encoder is now SentenceTransformer-based (frozen), so we just recreate it
+mission_encoder = SentenceMissionEncoder(
+    model_name="all-MiniLM-L6-v2",
+    frozen=True,
+    normalize=True,
+    cache=True,
+    device=device
+)
+mission_encoder.eval()
+
+preprocess_obs = sampler_lang.preprocess_obs
+mission_encoder_output_dim = mission_encoder.output_dim
+
 # Adapter
 mission_adapter = MissionParamAdapter(mission_encoder_output_dim, policy_param_shapes).to(device)
 mission_adapter.load_state_dict(ckpt["mission_adapter"])    
 mission_adapter.eval()
 
 
+# MAML policy
+ckpt_base = f"maml_model/maml_{env_name}.pth"
+ckpt_maml = torch.load(ckpt_base, map_location=device)
 
-# restore saved lang-adapted policy 
+dummy_obs, _ = env.reset()
+input_size_maml = sampler_maml.preprocess_obs(dummy_obs).shape[0]
+
+policy_maml = CategoricalMLPPolicy(
+    input_size=input_size_maml,
+    output_size=output_size,
+    hidden_sizes=hidden_sizes,
+    nonlinearity=nonlinearity,
+).to(device)
+
+# support both formats: either {"policy": ...} or direct state_dict
+if isinstance(ckpt_maml, dict) and "policy" in ckpt_maml:
+    policy_maml.load_state_dict(ckpt_maml["policy"])
+else:
+    policy_maml.load_state_dict(ckpt_maml)
+
+policy_maml.eval()
+
+baseline = LinearFeatureBaseline(input_size_maml).to(device)
+
+
+# Language-conditioned policy
 ckpt_ablation = torch.load(f"lang_policy_model/lang_policy_{env_name}.pth", map_location=device)
-with open(f"lang_policy_model/vectorizer_lang_{env_name}.pkl", "rb") as f:
-    vectorizer_ablation = pickle.load(f)
 
 # wire globals for sampler_lang_policy
 sampler_lang_policy.device = device
-sampler_lang_policy.vectorizer = vectorizer_ablation
 
-# mission encoder for ablation baseline
-sampler_lang_policy.mission_encoder = sampler_lang_policy.MissionEncoder(
-    len(sampler_lang_policy.vectorizer.get_feature_names_out()),
-    hidden_dim1=32, hidden_dim2=64, output_dim=32
-).to(device)
-sampler_lang_policy.mission_encoder.load_state_dict(ckpt_ablation["mission_encoder"])
-sampler_lang_policy.mission_encoder.eval()
+# The ablation baseline now uses BERT directly via preprocess_obs
+# No separate mission_encoder needed - it's embedded in preprocess_obs
 
 # figure out input size for this baseline
 dummy_obs, _ = env.reset()
@@ -231,73 +248,27 @@ policy_ablation.load_state_dict(ckpt_ablation["policy"])
 policy_ablation.eval()
 
 
-# restore saved maml policy
-ckpt_base = f"maml_model/maml_{env_name}"
-with open(ckpt_base + "_vectorizer.pkl", "rb") as f:
-    sampler_maml.vectorizer = pickle.load(f)
-
-# Policy maml
-sampler_maml.mission_encoder = sampler_maml.MissionEncoder(
-    len(sampler_maml.vectorizer.get_feature_names_out()),
-    hidden_dim1=32, hidden_dim2=64, output_dim=32
-).to(device)
-sampler_maml.mission_encoder.load_state_dict(torch.load(ckpt_base + "_encoder.pth", map_location=device))
-sampler_maml.mission_encoder.eval()
-
-dummy_obs, _ = env.reset()
-input_size_maml = sampler_maml.preprocess_obs(dummy_obs).shape[0]
-
-policy_maml = CategoricalMLPPolicy(
-        input_size=input_size_maml,
-        output_size=output_size,
-        hidden_sizes=hidden_sizes,
-        nonlinearity=nonlinearity,      
-    ).to(device)
-
-policy_maml.load_state_dict(torch.load(ckpt_base + ".pth", map_location=device))
-policy_maml.eval()
-
-
-baseline = LinearFeatureBaseline(input_size_maml).to(device)
-
-
-def get_language_adapted_params(policy, mission_str, mission_encoder, mission_adapter, vectorizer, device):
-    mission_vec = vectorizer.transform([mission_str]).toarray()[0]
-    mission_tensor = torch.from_numpy(mission_vec.astype(np.float32)).unsqueeze(0).to(device)
+def get_language_adapted_params(policy, mission_str, mission_encoder, mission_adapter, device):
     with torch.no_grad():
-        mission_emb = mission_encoder(mission_tensor)
-        mission_emb = mission_emb.to(device)
+        mission_emb = mission_encoder(mission_str).to(device)  # shape [1, d]
         delta_thetas = mission_adapter(mission_emb)
-        delta_thetas = [delta * delta_theta  for delta in delta_thetas]
+        delta_thetas = [delta * delta_theta for delta in delta_thetas]
     policy_params = list(policy.parameters())
     param_names = list(dict(policy.named_parameters()).keys())
-    from collections import OrderedDict
     theta_prime = OrderedDict(
         (name, param + delta.squeeze(0))
         for name, param, delta in zip(param_names, policy_params, delta_thetas)
     )
-
     return theta_prime
 
-def adapt_policy_for_task(task, policy, num_grad_steps=1, fast_lr=0.5,
-                          batch_size=10, baseline=None):
-    """
-    Perform num_grad_steps inner-loop gradient updates using REINFORCE
-    on trajectories from the current task.
 
-    If num_grad_steps == 0, returns None (i.e., use θ without adaptation).
-    """
+def adapt_policy_for_task(task, policy, num_steps=1, fast_lr=0.5, batch_size=10,baseline=None):
+    
     env.reset_task(task)
-
-    # No adaptation: use initialization θ
-    if num_grad_steps == 0:
-        return None
-
-    params = None  # start from θ
-    for step in range(num_grad_steps):
+    
+    train_batches = []
+    for _ in range(num_steps+1):
         batch = BatchEpisodes(batch_size=batch_size, gamma=0.99, device=device)
-
-        # Collect trajectories with current params
         for ep in range(batch_size):
             with silence_sampling_rejected():
                 obs, info = env.reset()
@@ -308,31 +279,28 @@ def adapt_policy_for_task(task, policy, num_grad_steps=1, fast_lr=0.5,
             while not done:
                 obs_vec = sampler_maml.preprocess_obs(obs)
                 obs_tensor = torch.from_numpy(obs_vec).float().unsqueeze(0).to(device)
-
                 with torch.no_grad():
-                    if params is not None:
-                        dist = policy(obs_tensor, params=params)
-                    else:
-                        dist = policy(obs_tensor)
+                    dist = policy(obs_tensor)
                     action = dist.sample().item()
-
                 obs, reward, terminated, truncated, info = env.step(action)
                 done = terminated or truncated
-
                 episode_obs.append(obs_vec)
                 episode_actions.append(np.array(action))
                 episode_rewards.append(np.array(reward, dtype=np.float32))
+            batch.append(episode_obs, episode_actions, episode_rewards, [ep]*len(episode_obs))
+        train_batches.append(batch)
 
-            batch.append(episode_obs, episode_actions, episode_rewards,
-                         [ep] * len(episode_obs))
-
-        # Advantage + one inner-loop gradient update
+    # Compute advantages 
+    for batch in train_batches:
         batch.compute_advantages(baseline, gae_lambda=1.0, normalize=True)
+    
+    # Compute gradients and adapt policy parameters
+    params = None
+    for batch in train_batches:
         loss = reinforce_loss(policy, batch, params=params)
-        params = policy.update_params(loss, params=params,
-                                      step_size=fast_lr, first_order=True)
-
+        params = policy.update_params(loss, params=params, step_size=fast_lr, first_order=True)
     return params
+
 
 
 def evaluate_policy(env, policy,preprocess_obs=None, params=None, max_steps=max_steps, render=False):
@@ -358,81 +326,82 @@ def evaluate_policy(env, policy,preprocess_obs=None, params=None, max_steps=max_
 
 
 # Evaluation
-N_MISSIONS = 20
-N_EPISODES = 40
+N_MISSIONS = 10
+N_EPISODES = 20
 
 results_lang = []
+results_maml = []
 results_lang_conditioned = []
-results_maml_zero = []   # θ only, no adaptation
-results_maml_adapt = []  # θ adapted with k gradient steps
+results_random = []
 
-print("Comparing language-adapted policy and random policy on random missions:")
+print("Comparing LA-MAML with baselines:")
 for i in range(N_MISSIONS):
     mission = random.choice(missions)
 
     # 1. Lang-adapted policy
-    theta_prime = get_language_adapted_params(policy_lang, mission, mission_encoder, mission_adapter, vectorizer, device)
+    theta_prime = get_language_adapted_params(policy_lang, mission, mission_encoder, mission_adapter, device)
     lang_steps = []
-
+    print(f"\n LA-MAML policy for mission {mission}:")
     for ep in range(N_EPISODES):
         env.reset_task(mission)
         steps = evaluate_policy(env, policy_lang, preprocess_obs= sampler_lang.preprocess_obs, params=theta_prime)
         lang_steps.append(steps)
+        print(f"Episode {ep+1}/{N_EPISODES}: {steps} steps")
     mean_lang = np.mean(lang_steps)
     std_lang = np.std(lang_steps)
     results_lang.append(mean_lang)
 
+    # 2. MAML policy
+    maml_params = adapt_policy_for_task(mission, policy_maml, num_steps=2, fast_lr=0.25, batch_size=10, baseline=baseline)
+    maml_steps = []
+    print(f"\n MAML policy for mission {mission}:")
+    for ep in range(N_EPISODES):
+        env.reset_task(mission)
+        steps = evaluate_policy(env, policy_maml, preprocess_obs= sampler_maml.preprocess_obs, params=maml_params)
+        maml_steps.append(steps)
+        print(f"Episode {ep+1}/{N_EPISODES}: {steps} steps")
+    mean_maml = np.mean(maml_steps)
+    std_maml = np.std(maml_steps)
+    results_maml.append(mean_maml)
 
-    # 2. Language-conditioned policy WITHOUT meta-learning
-    lang_conditioned_policy_steps = []
+    # 3. Language-conditioned policy WITHOUT meta-learning
+    ablation_steps = []
     preprocess_ablation = lambda obs, m=mission: sampler_lang_policy.preprocess_obs(obs, mission_str=m)
-
+    print(f"\n Language-conditioned policy for mission {mission}:")
     for ep in range(N_EPISODES):
         env.reset_task(mission)
         steps = evaluate_policy(env,
                                 policy_ablation,
                                 preprocess_obs=preprocess_ablation)
-        lang_conditioned_policy_steps.append(steps)
-
-    mean_ablation = np.mean(lang_conditioned_policy_steps)
+        ablation_steps.append(steps)
+        print(f"Episode {ep+1}/{N_EPISODES}: {steps} steps")
+    mean_ablation = np.mean(ablation_steps) 
     results_lang_conditioned.append(mean_ablation)
 
-    # 3. MAML (no adaptation): use θ directly (no inner-loop gradient)
-    maml_zero_steps = []
+
+    # 4. Randomly initialized policy
+    scratch_policy = CategoricalMLPPolicy(
+        input_size=input_size_lang,
+        output_size=output_size,
+        hidden_sizes=hidden_sizes,
+        nonlinearity=nonlinearity,
+    ).to(device)
+    scratch_policy.eval()
+    rand_steps = []
+    print(f"\n Randomly initialized policy for mission {mission}:")
     for ep in range(N_EPISODES):
         env.reset_task(mission)
-        steps = evaluate_policy(
-            env, policy_maml,
-            preprocess_obs=sampler_maml.preprocess_obs,
-            params=None            # <-- no adaptation
-        )
-        maml_zero_steps.append(steps)
-    results_maml_zero.append(np.mean(maml_zero_steps))
+        steps = evaluate_policy(env, scratch_policy, preprocess_obs=sampler_lang.preprocess_obs)
+        rand_steps.append(steps)
+        print(f"Episode {ep+1}/{N_EPISODES}: {steps} steps")
+    mean_rand = np.mean(rand_steps)
+    std_rand = np.std(rand_steps)
+    results_random.append(mean_rand)
 
-    # 4. MAML (k-shot adaptation): inner-loop gradients with few examples
-    #    Choose k = 1 or 2 (reviewer wants "a few examples")
-    maml_params = adapt_policy_for_task(
-        mission, policy_maml,
-        num_grad_steps=2,         # e.g., 2 gradient steps
-        fast_lr=0.25,
-        batch_size=10,
-        baseline=baseline
-    )
-
-    maml_adapt_steps = []
-    for ep in range(N_EPISODES):
-        env.reset_task(mission)
-        steps = evaluate_policy(
-            env, policy_maml,
-            preprocess_obs=sampler_maml.preprocess_obs,
-            params=maml_params     # <-- adapted parameters
-        )
-        maml_adapt_steps.append(steps)
-    results_maml_adapt.append(np.mean(maml_adapt_steps))
 
 # Results
 print("\n===== FINAL AGGREGATE RESULTS =====")
-print(f"LA-MAML policy (lang only):      {np.mean(results_lang):.2f} ± {np.std(results_lang):.2f}")
-print(f"MAML (θ only, no adaptation):    {np.mean(results_maml_zero):.2f} ± {np.std(results_maml_zero):.2f}")
-print(f"MAML (k-shot, 2 grad steps):     {np.mean(results_maml_adapt):.2f} ± {np.std(results_maml_adapt):.2f}")
-print(f"language-conditioned policy:   {np.mean(results_lang_conditioned):.2f} ± {np.std(results_lang_conditioned):.2f}")
+print(f"LA-MAML policy: {np.mean(results_lang):.2f} ± {np.std(results_lang):.2f}")
+print(f"MAML policy:   {np.mean(results_maml):.2f} ± {np.std(results_maml):.2f}")
+print(f"Language-conditioned policy:  {np.mean(results_lang_conditioned):.2f} ± {np.std(results_lang_conditioned):.2f}")
+print(f"Randomly initialized policy:  {np.mean(results_random):.2f} ± {np.std(results_random):.2f}")

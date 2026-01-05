@@ -247,7 +247,7 @@ class PickupDistMissionEnv(RoomGridLevel):
 
 
 class GoToObjDoorMissionEnv(GoToObjDoor):
-    def __init__(self,num_distractors=8, **kwargs):
+    def __init__(self,num_distractors=3, **kwargs):
         super().__init__( **kwargs)
         self._forced_mission = None
         self.num_distractors = num_distractors

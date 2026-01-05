@@ -5,7 +5,7 @@ from concurrent.futures import ProcessPoolExecutor
 import gymnasium as gym 
 from maml_rl.episode import BatchEpisodes
 from maml_rl.utils.reinforcement_learning import reinforce_loss
-
+import random
 import builtins, io
 from contextlib import contextmanager, redirect_stdout, redirect_stderr
 
@@ -26,6 +26,14 @@ def silence_sampling_rejected():
 
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+
+def seed_everything(seed: int):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+
 
 
 def rollout_one_task(args):

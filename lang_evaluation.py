@@ -24,6 +24,7 @@ import argparse
 import builtins, io
 from contextlib import contextmanager, redirect_stdout, redirect_stderr
 
+
 @contextmanager
 def silence_sampling_rejected():
     real_print = builtins.print

@@ -5,6 +5,10 @@ import torch
 import pickle
 import gc
 import time
+import json
+import os
+import matplotlib.pyplot as plt
+import random
 from maml_rl.baseline import LinearFeatureBaseline
 from maml_rl.policies.categorical_mlp import CategoricalMLPPolicy
 from maml_rl.utils.reinforcement_learning import reinforce_loss, get_returns
@@ -106,6 +110,21 @@ def select_missions(env):
 
 
 def main():
+
+
+    def set_seed(seed: int):
+        os.environ["PYTHONHASHSEED"] = str(seed)
+        random.seed(seed)
+        np.random.seed(seed)
+        torch.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+
+        # deterministic-ish
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+
+    seed = 1
+    set_seed(seed)
 
     env_name  = args.env_name
     room_size = args.room_size
@@ -210,6 +229,23 @@ def main():
     torch.save({
         "policy": policy.state_dict()
     }, f"lang_policy_model/lang_policy_{env_name}.pth")
+
+
+    # plot
+    env_dir = os.path.join("metrics", env_name)
+    os.makedirs(env_dir, exist_ok=True) 
+
+    np.save(os.path.join(env_dir, "lang_conditioned_avg_steps.npy"), np.array(avg_steps_per_batch))
+    with open(os.path.join(env_dir, "lang_conditioned_meta.json"), "w") as f:
+        json.dump({"label" : "language-conditioned policy", "env" : env_name}, f)
+    
+
+    # Plot the average steps per batch
+    plt.plot(avg_steps_per_batch)
+    plt.xlabel("Meta-batch")
+    plt.ylabel("Average steps per episode")
+    plt.title("Average steps per episode per meta-batch")
+    plt.show()
 
 
 if __name__ == "__main__":

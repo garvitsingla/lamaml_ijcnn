@@ -11,6 +11,11 @@ import numpy as np
 import torch  
 import pickle
 import gc
+import time
+import json
+import os
+import matplotlib.pyplot as plt
+import random
 from maml_rl.baseline import LinearFeatureBaseline
 from maml_rl.policies.categorical_mlp import CategoricalMLPPolicy
 from maml_rl.metalearners.maml_trpo import MAMLTRPO
@@ -108,6 +113,22 @@ def select_missions(env):
 
 def main():
 
+
+    def set_seed(seed: int):
+        os.environ["PYTHONHASHSEED"] = str(seed)
+        random.seed(seed)
+        np.random.seed(seed)
+        torch.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+
+        # deterministic-ish
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+
+    seed = 1
+    set_seed(seed)
+
+
     env_name  = args.env_name
     room_size = args.room_size
     num_dists = args.num_dists
@@ -171,6 +192,8 @@ def main():
     avg_steps_per_batch = []
     meta_batch_size = globals().get("meta_batch_size") or min(5, len(env.missions))
 
+    start_time = time.time()
+
     for batch in range(num_batches):
         print(f"Meta-batch {batch+1}/{num_batches}")
         train_episodes, valid_episodes, step_counts = sampler.sample(
@@ -196,9 +219,31 @@ def main():
             torch.cuda.empty_cache()
             torch.cuda.ipc_collect()
 
+    end_time = time.time()
+    training_time = end_time - start_time
+    print(f"Total training time: {training_time:.2f} seconds")
+
     # Save the trained meta-policy parameters
     ckpt_base = f"maml_model/maml_{env_name}"
     torch.save(policy.state_dict(), ckpt_base + ".pth")
+
+
+    # plot
+    env_dir = os.path.join("metrics", env_name)
+    os.makedirs(env_dir, exist_ok=True) 
+
+    np.save(os.path.join(env_dir, "maml_avg_steps.npy"), np.array(avg_steps_per_batch))
+    with open(os.path.join(env_dir, "maml_meta.json"), "w") as f:
+        json.dump({"label" : "MAML", "env" : env_name}, f)
+    
+
+    # Plot the average steps per batch
+    plt.plot(avg_steps_per_batch)
+    plt.xlabel("Meta-batch")
+    plt.ylabel("Average steps per episode")
+    plt.title("Average steps per episode per meta-batch")
+    plt.show()
+
 
 if __name__ == "__main__":
     mp.set_start_method("spawn", force=True)
