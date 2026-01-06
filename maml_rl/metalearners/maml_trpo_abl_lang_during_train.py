@@ -14,9 +14,8 @@ class MAMLTRPO(GradientBasedMetaLearner):
                  policy,
                  mission_encoder,
                  mission_adapter,
-                 vectorizer,   
                  fast_lr=0.5,
-                 delta_theta = None,
+                 delta_theta=None,
                  first_order=False,
                  device='cpu'):
         super(MAMLTRPO, self).__init__(policy, device=device)
@@ -25,19 +24,14 @@ class MAMLTRPO(GradientBasedMetaLearner):
         self.first_order = first_order
         self.mission_encoder = mission_encoder
         self.mission_adapter = mission_adapter
-        self.vectorizer = vectorizer
  
     def adapt_one(self, mission_str):
         
         if mission_str is None:
             raise RuntimeError("Mission string is None! Make sure each BatchEpisodes has a valid mission.")
 
-        # Encode mission
-        mission_vec = self.vectorizer.transform([mission_str]).toarray()[0]
-        mission_tensor = torch.from_numpy(mission_vec.astype('float32')).unsqueeze(0).to(next(self.mission_encoder.parameters()).device)
-
-        # Mission embedding 
-        mission_emb = self.mission_encoder(mission_tensor)
+        # SentenceTransformer encoding (handles tokenization internally)
+        mission_emb = self.mission_encoder(mission_str)
         mission_emb = mission_emb.to(next(self.mission_adapter.parameters()).device)
 
         # Mission Adapter
@@ -54,7 +48,7 @@ class MAMLTRPO(GradientBasedMetaLearner):
             for name, param, delta in zip(param_names, policy_params, delta_thetas)
         )
 
-        return theta_prime 
+        return theta_prime
 
 
     def hessian_vector_product(self, kl, meta_params, damping=1e-2):

@@ -1,4 +1,4 @@
-from minigrid.envs.babyai.goto import GoToLocal, GoTo, GoToObjDoor
+from minigrid.envs.babyai.goto import GoToLocal, GoTo, GoToObjDoor, GoToObj
 from minigrid.envs.babyai.open import Open
 from minigrid.envs.babyai.other import ActionObjDoor
 from minigrid.envs.babyai.core.roomgrid_level import RoomGridLevel
@@ -134,6 +134,41 @@ class GoToLocalMissionEnv(GoToLocal):
         else:
             super().gen_mission()
 
+
+class GoToObjMissionEnv(GoToObj):
+    """
+    Go to an object in a single room with NO distractors.
+    This is the simplest navigation task - matches original BabyAI GoToObj.
+    Compatible with the LA-MAML pipeline.
+    """
+    def __init__(self, room_size=8, **kwargs):
+        super().__init__(room_size=room_size, **kwargs)
+        self._forced_mission = None
+        # self.render_mode = kwargs.get('render_mode', 'human')
+
+    def set_forced_mission(self, mission):
+        self._forced_mission = mission
+
+    def gen_mission(self):
+        if self._forced_mission is not None:
+            m = re.match(r"go to the (\w+) (\w+)", self._forced_mission)
+            if m:
+                color, obj_type = m.groups()
+                
+                # Place agent
+                self.place_agent()
+                
+                # Add ONLY the target object (no distractors)
+                target_obj, _ = self.add_object(0, 0, obj_type, color)
+                
+                # Set instruction
+                self.instrs = GoToInstr(ObjDesc(obj_type, color))
+                return
+
+            else:
+                super().gen_mission()
+        else:
+            super().gen_mission()
 
 
 

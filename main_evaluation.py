@@ -2,7 +2,8 @@ import torch
 import numpy as np
 import random
 from functools import partial
-from environment import (GoToLocalMissionEnv, 
+from environment import (GoToLocalMissionEnv,
+                         GoToObjMissionEnv,    
                          GoToOpenMissionEnv, 
                          GoToObjDoorMissionEnv,  
                          PickupDistMissionEnv,
@@ -51,7 +52,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 p = argparse.ArgumentParser()
 p.add_argument("--env", dest="env_name",
-               choices=["GoToLocal","PickupDist","GoToObjDoor","GoToOpen","OpenDoor",
+               choices=["GoToLocal","GoToObj","PickupDist","GoToObjDoor","GoToOpen","OpenDoor",
                         "OpenDoorLoc","OpenDoorsOrder","ActionObjDoor","PutNextLocal"],
                default="GoToLocal")
 p.add_argument("--room-size", type=int, default=7)
@@ -78,6 +79,7 @@ PICKUP_MISSIONS = [f"pick up the {color} {obj}" for color in COLORS for obj in O
 
 # For GoToLocal
 LOCAL_MISSIONS = [f"go to the {color} {obj}" for color in COLORS for obj in OBJECTS]
+
 
 # For environments that include doors (GoToObjDoor, GoToOpen, Open)
 DOOR_MISSIONS = [f"go to the {color} door" for color in DOOR_COLORS]
@@ -108,6 +110,8 @@ def build_env(env, room_size, num_dists, max_steps, missions):
 
     if env == "GoToLocal":
         base = GoToLocalMissionEnv(room_size=room_size, num_dists=num_dists, max_steps=max_steps)
+    elif env == "GoToObj":
+        base = GoToObjMissionEnv(room_size=room_size, max_steps=max_steps)
     elif env == "PickupDist":
         base = PickupDistMissionEnv(room_size=room_size, num_dists=num_dists, max_steps=max_steps)
     elif env == "GoToObjDoor":
@@ -133,6 +137,7 @@ def build_env(env, room_size, num_dists, max_steps, missions):
 def select_missions(env_name):
     mission_map = {
         "GoToLocal": LOCAL_MISSIONS,
+        "GoToObj": LOCAL_MISSIONS,
         "PickupDist": PICKUP_MISSIONS,
         "GoToObjDoor": LOCAL_MISSIONS + DOOR_MISSIONS,
         "GoToOpen": LOCAL_MISSIONS,
@@ -303,12 +308,14 @@ def adapt_policy_for_task(task, policy, num_steps=1, fast_lr=0.5, batch_size=10,
 
 
 
-def evaluate_policy(env, policy,preprocess_obs=None, params=None, max_steps=max_steps, render=False):
+def evaluate_policy(env, policy, preprocess_obs=None, params=None, render=False):
     with silence_sampling_rejected():
         obs, info = env.reset()
     steps = 0
     done = False
-    while not done and steps < max_steps:
+    # Use the environment's own max_steps attribute
+    env_max_steps = getattr(env.unwrapped, 'max_steps', float('inf'))
+    while not done and steps < env_max_steps:
         if render:
             env.render("human")
         obs_vec = preprocess_obs(obs)
@@ -341,12 +348,12 @@ for i in range(N_MISSIONS):
     # 1. Lang-adapted policy
     theta_prime = get_language_adapted_params(policy_lang, mission, mission_encoder, mission_adapter, device)
     lang_steps = []
-    print(f"\n LA-MAML policy for mission {mission}:")
+    # print(f"\n LA-MAML policy for mission {mission}:")
     for ep in range(N_EPISODES):
         env.reset_task(mission)
         steps = evaluate_policy(env, policy_lang, preprocess_obs= sampler_lang.preprocess_obs, params=theta_prime)
         lang_steps.append(steps)
-        print(f"Episode {ep+1}/{N_EPISODES}: {steps} steps")
+        # print(f"Episode {ep+1}/{N_EPISODES}: {steps} steps")
     mean_lang = np.mean(lang_steps)
     std_lang = np.std(lang_steps)
     results_lang.append(mean_lang)
@@ -354,12 +361,12 @@ for i in range(N_MISSIONS):
     # 2. MAML policy
     maml_params = adapt_policy_for_task(mission, policy_maml, num_steps=2, fast_lr=0.25, batch_size=10, baseline=baseline)
     maml_steps = []
-    print(f"\n MAML policy for mission {mission}:")
+    # print(f"\n MAML policy for mission {mission}:")
     for ep in range(N_EPISODES):
         env.reset_task(mission)
         steps = evaluate_policy(env, policy_maml, preprocess_obs= sampler_maml.preprocess_obs, params=maml_params)
         maml_steps.append(steps)
-        print(f"Episode {ep+1}/{N_EPISODES}: {steps} steps")
+        # print(f"Episode {ep+1}/{N_EPISODES}: {steps} steps")
     mean_maml = np.mean(maml_steps)
     std_maml = np.std(maml_steps)
     results_maml.append(mean_maml)
@@ -367,14 +374,14 @@ for i in range(N_MISSIONS):
     # 3. Language-conditioned policy WITHOUT meta-learning
     ablation_steps = []
     preprocess_ablation = lambda obs, m=mission: sampler_lang_policy.preprocess_obs(obs, mission_str=m)
-    print(f"\n Language-conditioned policy for mission {mission}:")
+    # print(f"\n Language-conditioned policy for mission {mission}:")
     for ep in range(N_EPISODES):
         env.reset_task(mission)
         steps = evaluate_policy(env,
                                 policy_ablation,
                                 preprocess_obs=preprocess_ablation)
         ablation_steps.append(steps)
-        print(f"Episode {ep+1}/{N_EPISODES}: {steps} steps")
+        # print(f"Episode {ep+1}/{N_EPISODES}: {steps} steps")
     mean_ablation = np.mean(ablation_steps) 
     results_lang_conditioned.append(mean_ablation)
 
@@ -388,12 +395,12 @@ for i in range(N_MISSIONS):
     ).to(device)
     scratch_policy.eval()
     rand_steps = []
-    print(f"\n Randomly initialized policy for mission {mission}:")
+    # print(f"\n Randomly initialized policy for mission {mission}:")
     for ep in range(N_EPISODES):
         env.reset_task(mission)
         steps = evaluate_policy(env, scratch_policy, preprocess_obs=sampler_lang.preprocess_obs)
         rand_steps.append(steps)
-        print(f"Episode {ep+1}/{N_EPISODES}: {steps} steps")
+        # print(f"Episode {ep+1}/{N_EPISODES}: {steps} steps")
     mean_rand = np.mean(rand_steps)
     std_rand = np.std(rand_steps)
     results_random.append(mean_rand)

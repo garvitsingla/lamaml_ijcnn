@@ -16,6 +16,7 @@ import time
 import os
 import json
 import matplotlib.pyplot as plt
+import random
 from maml_rl.baseline import LinearFeatureBaseline
 from maml_rl.policies.categorical_mlp import CategoricalMLPPolicy
 from maml_rl.metalearners.lang_trpo import MAMLTRPO
@@ -35,14 +36,15 @@ from environment import (LOCAL_MISSIONS,
                         ACTION_OBJ_DOOR_MISSIONS,
                         PUTNEXT_MISSIONS)                        
 from environment import (GoToLocalMissionEnv, 
-                            GoToOpenMissionEnv, 
-                            GoToObjDoorMissionEnv, 
-                            PickupDistMissionEnv,
-                            OpenDoorMissionEnv,
-                            OpenDoorLocMissionEnv,
-                            OpenDoorsOrderMissionEnv,
-                            ActionObjDoorMissionEnv,
-                            PutNextLocalMissionEnv)
+                        GoToObjMissionEnv,
+                        GoToOpenMissionEnv, 
+                        GoToObjDoorMissionEnv, 
+                        PickupDistMissionEnv,
+                        OpenDoorMissionEnv,
+                        OpenDoorLocMissionEnv,
+                        OpenDoorsOrderMissionEnv,
+                        ActionObjDoorMissionEnv,
+                        PutNextLocalMissionEnv)
 import argparse
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -50,13 +52,13 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # argparser
 p = argparse.ArgumentParser()
 p.add_argument("--env", dest="env_name",
-               choices=["GoToLocal","PickupDist","GoToObjDoor","GoToOpen","OpenDoor",
+               choices=["GoToLocal","GoToObj","PickupDist","GoToObjDoor","GoToOpen","OpenDoor",
                         "OpenDoorLoc","OpenDoorsOrder","ActionObjDoor","PutNextLocal"],
                default="GoToLocal")
 p.add_argument("--room-size", type=int, default=7)
 p.add_argument("--num-dists", type=int, default=3)
 p.add_argument("--max-steps", type=int, default=300)
-p.add_argument("--delta-theta", type=int, default=0.7)
+p.add_argument("--delta-theta", type=float, default=0.7)
 p.add_argument("--meta-iters", type=int, default=50, help="number of meta-batches")
 p.add_argument("--batch-size", type=int, default=50, help="episodes per meta-batch (per task)")
 p.add_argument("--num-workers", type=int, default=4)
@@ -69,6 +71,8 @@ def build_env(env, room_size, num_dists, max_steps, missions):
 
     if env == "GoToLocal":
         base = GoToLocalMissionEnv(room_size=room_size, num_dists=num_dists, max_steps=max_steps)
+    elif env == "GoToObj":
+        base = GoToObjMissionEnv(room_size=room_size, max_steps=max_steps)  # No num_dists!
     elif env == "PickupDist":
         base = PickupDistMissionEnv(room_size=room_size, num_dists=num_dists, max_steps=max_steps)
     elif env == "GoToObjDoor":
@@ -92,27 +96,20 @@ def build_env(env, room_size, num_dists, max_steps, missions):
 
 
 # Select for missions based on environment
-def select_missions(env):
-
-    if env == "GoToLocal":
-        return LOCAL_MISSIONS
-    if env == "PickupDist":
-        return PICKUP_MISSIONS
-    if env == "GoToObjDoor":
-        return (LOCAL_MISSIONS + DOOR_MISSIONS)
-    if env == "GoToOpen":
-        return LOCAL_MISSIONS
-    if env == "OpenDoor":
-        return OPEN_DOOR_MISSIONS
-    if env == "OpenDoorLoc":
-        return (OPEN_DOOR_MISSIONS + DOOR_LOC_MISSIONS)
-    if env == "OpenDoorsOrder":
-        return OPEN_DOORS_ORDER_MISSIONS
-    if env == "ActionObjDoor":
-        return ACTION_OBJ_DOOR_MISSIONS
-    if env == "PutNextLocal":
-        return PUTNEXT_MISSIONS 
-    raise ValueError(f"Unknown env for missions: {env}")
+def select_missions(env_name):
+    mission_map = {
+        "GoToLocal": LOCAL_MISSIONS,
+        "GoToObj": LOCAL_MISSIONS,
+        "PickupDist": PICKUP_MISSIONS,
+        "GoToObjDoor": LOCAL_MISSIONS + DOOR_MISSIONS,
+        "GoToOpen": LOCAL_MISSIONS,
+        "OpenDoor": OPEN_DOOR_MISSIONS,
+        "OpenDoorLoc": OPEN_DOOR_MISSIONS + DOOR_LOC_MISSIONS,
+        "OpenDoorsOrder": OPEN_DOORS_ORDER_MISSIONS,
+        "ActionObjDoor": ACTION_OBJ_DOOR_MISSIONS,
+        "PutNextLocal": PUTNEXT_MISSIONS
+    }
+    return mission_map[env_name]
 
 
 def main():
@@ -123,9 +120,10 @@ def main():
         random.seed(seed)
         np.random.seed(seed)
         torch.manual_seed(seed)
-        torch.cuda.manual_seed_all(seed)
 
-        # deterministic-ish
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(seed)
+
         torch.backends.cudnn.deterministic = True
         torch.backends.cudnn.benchmark = False
 

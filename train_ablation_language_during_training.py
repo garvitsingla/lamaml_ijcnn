@@ -2,27 +2,27 @@ import torch.multiprocessing as mp
 from functools import partial
 import numpy as np
 import torch
-import pickle
 import gc
+import os
 from maml_rl.baseline import LinearFeatureBaseline
 from maml_rl.policies.categorical_mlp import CategoricalMLPPolicy
 from maml_rl.metalearners.maml_trpo_abl_lang_during_train import MAMLTRPO
-from sklearn.feature_extraction.text import CountVectorizer
 import sampler_lang as S
 from sampler_lang import (BabyAIMissionTaskWrapper, 
-                        MissionEncoder, 
+                        SentenceMissionEncoder, 
                         MissionParamAdapter, 
                         MultiTaskSampler, 
                         preprocess_obs)
-from environment import (LOCAL_MISSIONS, LOCAL_MISSIONS_VOCAB,
-                        DOOR_MISSIONS, DOOR_MISSIONS_VOCAB,
-                        OPEN_DOOR_MISSIONS, OPEN_DOOR_MISSIONS_VOCAB,
-                        DOOR_LOC_MISSIONS,  DOOR_LOC_MISSIONS_VOCAB,
-                        PICKUP_MISSIONS, PICKUP_MISSIONS_VOCAB,
-                        OPEN_DOORS_ORDER_MISSIONS, OPEN_DOORS_ORDER_MISSIONS_VOCAB,
-                        ACTION_OBJ_DOOR_MISSIONS, ACTION_OBJ_DOOR_MISSIONS_VOCAB,
-                        PUTNEXT_MISSIONS, PUTNEXT_MISSIONS_VOCAB)      
-from environment import (GoToLocalMissionEnv, 
+from environment import (LOCAL_MISSIONS,
+                        DOOR_MISSIONS,
+                        OPEN_DOOR_MISSIONS,
+                        DOOR_LOC_MISSIONS,
+                        PICKUP_MISSIONS,
+                        OPEN_DOORS_ORDER_MISSIONS,
+                        ACTION_OBJ_DOOR_MISSIONS,
+                        PUTNEXT_MISSIONS)      
+from environment import (GoToLocalMissionEnv,
+                            GoToObjMissionEnv,
                             GoToOpenMissionEnv, 
                             GoToObjDoorMissionEnv, 
                             PickupDistMissionEnv,
@@ -38,13 +38,13 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # argparser
 p = argparse.ArgumentParser()
 p.add_argument("--env", dest="env_name",
-               choices=["GoToLocal","PickupDist","GoToObjDoor","GoToOpen","OpenDoor",
+               choices=["GoToLocal","GoToObj","PickupDist","GoToObjDoor","GoToOpen","OpenDoor",
                         "OpenDoorLoc","OpenDoorsOrder","ActionObjDoor","PutNextLocal"],
                default="GoToLocal")
 p.add_argument("--room-size", type=int, default=7)
 p.add_argument("--num-dists", type=int, default=3)
 p.add_argument("--max-steps", type=int, default=300)
-p.add_argument("--delta-theta", type=int, default=0.7)
+p.add_argument("--delta-theta", type=float, default=0.7)
 p.add_argument("--meta-iters", type=int, default=50, help="number of meta-batches")
 p.add_argument("--batch-size", type=int, default=50, help="episodes per meta-batch (per task)")
 p.add_argument("--num-workers", type=int, default=4)
@@ -57,6 +57,8 @@ def build_env(env, room_size, num_dists, max_steps, missions):
 
     if env == "GoToLocal":
         base = GoToLocalMissionEnv(room_size=room_size, num_dists=num_dists, max_steps=max_steps)
+    elif env == "GoToObj":
+        base = GoToObjMissionEnv(room_size=room_size, max_steps=max_steps)
     elif env == "PickupDist":
         base = PickupDistMissionEnv(room_size=room_size, num_dists=num_dists, max_steps=max_steps)
     elif env == "GoToObjDoor":
@@ -79,28 +81,21 @@ def build_env(env, room_size, num_dists, max_steps, missions):
     return BabyAIMissionTaskWrapper(base, missions=missions)
 
 
-# Select for missions & vocab based on environment
-def select_missions_and_vocab(env):
-
-    if env == "GoToLocal":
-        return LOCAL_MISSIONS, LOCAL_MISSIONS_VOCAB
-    if env == "PickupDist":
-        return PICKUP_MISSIONS, PICKUP_MISSIONS_VOCAB
-    if env == "GoToObjDoor":
-        return (LOCAL_MISSIONS + DOOR_MISSIONS), (LOCAL_MISSIONS_VOCAB + DOOR_MISSIONS_VOCAB)
-    if env == "GoToOpen":
-        return LOCAL_MISSIONS, LOCAL_MISSIONS_VOCAB
-    if env == "OpenDoor":
-        return OPEN_DOOR_MISSIONS, OPEN_DOOR_MISSIONS_VOCAB
-    if env == "OpenDoorLoc":
-        return (OPEN_DOOR_MISSIONS + DOOR_LOC_MISSIONS), (OPEN_DOOR_MISSIONS_VOCAB + DOOR_LOC_MISSIONS_VOCAB)
-    if env == "OpenDoorsOrder":
-        return OPEN_DOORS_ORDER_MISSIONS, OPEN_DOORS_ORDER_MISSIONS_VOCAB
-    if env == "ActionObjDoor":
-        return ACTION_OBJ_DOOR_MISSIONS, ACTION_OBJ_DOOR_MISSIONS_VOCAB
-    if env == "PutNextLocal":
-        return PUTNEXT_MISSIONS, PUTNEXT_MISSIONS_VOCAB 
-    raise ValueError(f"Unknown env for missions/vocab: {env}")
+# Select missions based on environment
+def select_missions(env):
+    mission_map = {
+        "GoToLocal": LOCAL_MISSIONS,
+        "GoToObj": LOCAL_MISSIONS,
+        "PickupDist": PICKUP_MISSIONS,
+        "GoToObjDoor": LOCAL_MISSIONS + DOOR_MISSIONS,
+        "GoToOpen": LOCAL_MISSIONS,
+        "OpenDoor": OPEN_DOOR_MISSIONS,
+        "OpenDoorLoc": OPEN_DOOR_MISSIONS + DOOR_LOC_MISSIONS,
+        "OpenDoorsOrder": OPEN_DOORS_ORDER_MISSIONS,
+        "ActionObjDoor": ACTION_OBJ_DOOR_MISSIONS,
+        "PutNextLocal": PUTNEXT_MISSIONS
+    }
+    return mission_map[env]
 
 
 def main():
@@ -114,9 +109,7 @@ def main():
     num_batches = args.meta_iters
     batch_size = args.batch_size
 
-    missions, vocabs = select_missions_and_vocab(env_name)
-    vectorizer = CountVectorizer(ngram_range=(1, 2), lowercase=True)
-    vectorizer.fit(vocabs)
+    missions = select_missions(env_name)
 
     make_env = partial(
         build_env,
@@ -137,12 +130,15 @@ def main():
     hidden_sizes = (64, 64)
     nonlinearity = torch.nn.functional.tanh
 
-    # Instantiate the encoder 
-    S.vectorizer = vectorizer
-    mission_encoder_input_dim = len(S.vectorizer.get_feature_names_out())
-    mission_encoder_output_dim = 32  
-    mission_encoder = MissionEncoder(mission_encoder_input_dim,  hidden_dim1=32, hidden_dim2=64, output_dim=mission_encoder_output_dim).to(device)
-    S.mission_encoder = mission_encoder  
+    # Use SentenceTransformer encoder (frozen)
+    mission_encoder = SentenceMissionEncoder(
+        model_name="all-MiniLM-L6-v2",
+        frozen=True,
+        normalize=True,
+        cache=True,
+        device=device
+    )
+    mission_encoder_output_dim = mission_encoder.output_dim  
 
     # Finding Policy Parameters shape
     obs, _ = env.reset()
@@ -177,12 +173,11 @@ def main():
         num_workers=num_workers
     )
 
-    # Meta-learner setup
+    # Meta-learner setup (NOTE: This uses a special ablation MAML that doesn't use language)
     meta_learner = MAMLTRPO(
         policy=policy,
         mission_encoder=mission_encoder,
         mission_adapter=mission_adapter,
-        vectorizer=vectorizer,
         delta_theta=delta_theta,
         fast_lr=1e-4,
         first_order=True,
@@ -211,23 +206,19 @@ def main():
         meta_learner.step(valid_episodes,valid_episodes)
 
         gc.collect()
-        torch.cuda.empty_cache()
-        torch.cuda.ipc_collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.ipc_collect()
 
 
-    # # Save the trained meta-policy parameters
-    # torch.save({
-    #     "policy": policy.state_dict(),
-    #     "mission_encoder": mission_encoder.state_dict(),
-    #     "mission_adapter": mission_adapter.state_dict()
-    # }, f"ablation_language_parameters_untrained_model/lang_policy_{model}.pth")
+    # Save the trained meta-policy parameters (for ablation study)
+    os.makedirs("ablation_during_training", exist_ok=True)
+    torch.save({
+        "policy": policy.state_dict(),
+        "mission_encoder": mission_encoder.state_dict(),
+        "mission_adapter": mission_adapter.state_dict()
+    }, f"ablation_during_training/{env_name}.pth")
 
-    # # Save the vectorizer
-    # with open(f"ablation_language_parameters_untrained_model/vectorizer_lang_{model}.pkl", "wb") as f:
-    #     pickle.dump(vectorizer, f)
-
-
-    pass
 
 if __name__ == "__main__":
     mp.set_start_method("spawn", force=True)

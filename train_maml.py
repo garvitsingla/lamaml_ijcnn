@@ -33,6 +33,7 @@ from environment import (LOCAL_MISSIONS,
                          ACTION_OBJ_DOOR_MISSIONS,
                          PUTNEXT_MISSIONS)
 from environment import (GoToLocalMissionEnv, 
+                         GoToObjMissionEnv,
                          GoToOpenMissionEnv, 
                          GoToObjDoorMissionEnv,
                          PickupDistMissionEnv,
@@ -47,7 +48,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 p = argparse.ArgumentParser()
 p.add_argument("--env", dest="env_name",
-               choices=["GoToLocal","PickupDist","GoToObjDoor","GoToOpen","OpenDoor",
+               choices=["GoToLocal","PickupDist","GoToObj","GoToObjDoor","GoToOpen","OpenDoor",
                         "OpenDoorLoc","OpenDoorsOrder","ActionObjDoor","PutNextLocal"],
                default="GoToLocal")
 p.add_argument("--room-size", type=int, default=7)
@@ -67,6 +68,8 @@ def build_env(env, room_size, num_dists, max_steps, missions):
         base = GoToLocalMissionEnv(room_size=room_size, num_dists=num_dists, max_steps=max_steps)
     elif env == "PickupDist":
         base = PickupDistMissionEnv(room_size=room_size, num_dists=num_dists, max_steps=max_steps)
+    elif env == "GoToObj":
+        base = GoToObjMissionEnv(room_size=room_size, max_steps=max_steps)
     elif env == "GoToObjDoor":
         base = GoToObjDoorMissionEnv(max_steps=max_steps, num_distractors=num_dists)
     elif env == "GoToOpen":
@@ -90,6 +93,8 @@ def build_env(env, room_size, num_dists, max_steps, missions):
 def select_missions(env):
 
     if env == "GoToLocal":
+        return LOCAL_MISSIONS
+    if env == "GoToObj":
         return LOCAL_MISSIONS
     if env == "PickupDist":
         return PICKUP_MISSIONS
@@ -119,9 +124,10 @@ def main():
         random.seed(seed)
         np.random.seed(seed)
         torch.manual_seed(seed)
-        torch.cuda.manual_seed_all(seed)
 
-        # deterministic-ish
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(seed)
+
         torch.backends.cudnn.deterministic = True
         torch.backends.cudnn.benchmark = False
 

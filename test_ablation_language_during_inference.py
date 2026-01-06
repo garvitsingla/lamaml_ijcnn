@@ -2,7 +2,8 @@ import torch
 import numpy as np
 import random
 from functools import partial
-from environment import (GoToLocalMissionEnv, 
+from environment import (GoToLocalMissionEnv,
+                         GoToObjMissionEnv,
                          GoToOpenMissionEnv, 
                          GoToObjDoorMissionEnv,  
                          PickupDistMissionEnv,
@@ -10,7 +11,7 @@ from environment import (GoToLocalMissionEnv,
                          OpenDoorLocMissionEnv,
                          OpenDoorsOrderMissionEnv,
                          ActionObjDoorMissionEnv)
-from sampler_lang import BabyAIMissionTaskWrapper, MissionEncoder, MissionParamAdapter
+from sampler_lang import BabyAIMissionTaskWrapper, SentenceMissionEncoder, MissionParamAdapter
 import sampler_lang 
 from maml_rl.policies.categorical_mlp import CategoricalMLPPolicy
 import pickle
@@ -48,13 +49,13 @@ if torch.cuda.is_available():
 # argparser
 p = argparse.ArgumentParser()
 p.add_argument("--env", dest="env_name",
-               choices=["GoToLocal","PickupDist","GoToObjDoor","GoToOpen","OpenDoor",
+               choices=["GoToLocal","GoToObj","PickupDist","GoToObjDoor","GoToOpen","OpenDoor",
                         "OpenDoorLoc","OpenDoorsOrder","ActionObjDoor","PutNextLocal"],
                default="GoToLocal")
 p.add_argument("--room-size", type=int, default=7)
 p.add_argument("--num-dists", type=int, default=3)
 p.add_argument("--max-steps", type=int, default=300)
-p.add_argument("--delta-theta", type=int, default=0.7)
+p.add_argument("--delta-theta", type=float, default=0.7)
 p.add_argument("--skip-random", action="store_true",
                help="Skip the random-policy baseline to speed up evaluation")
 
@@ -99,6 +100,8 @@ def build_env(env, room_size, num_dists, max_steps, missions):
 
     if env == "GoToLocal":
         base = GoToLocalMissionEnv(room_size=room_size, num_dists=num_dists, max_steps=max_steps)
+    elif env == "GoToObj":
+        base = GoToObjMissionEnv(room_size=room_size, max_steps=max_steps)
     elif env == "PickupDist":
         base = PickupDistMissionEnv(room_size=room_size, num_dists=num_dists, max_steps=max_steps)
     elif env == "GoToObjDoor":
@@ -122,6 +125,7 @@ def build_env(env, room_size, num_dists, max_steps, missions):
 def select_missions(env_name):
     mission_map = {
         "GoToLocal": LOCAL_MISSIONS,
+        "GoToObj": LOCAL_MISSIONS,
         "PickupDist": PICKUP_MISSIONS,
         "GoToObjDoor": LOCAL_MISSIONS + DOOR_MISSIONS,
         "GoToOpen": LOCAL_MISSIONS,
@@ -148,17 +152,18 @@ print(f"env name {env} \n")
 
 # restore saved lang-adapted policy 
 
-ckpt = torch.load(f"lang_model/lang_policy_{env_name}.pth", map_location=device)
-with open(f"lang_model/vectorizer_lang_{env_name}.pkl", "rb") as f:
-    vectorizer = pickle.load(f)
+ckpt = torch.load(f"lang_model/lang_{env_name}.pth", map_location=device)
 
-
-sampler_lang.vectorizer = vectorizer  
-mission_encoder_output_dim = 32
-sampler_lang.mission_encoder = MissionEncoder(len(sampler_lang.vectorizer.get_feature_names_out()), 32, 64, mission_encoder_output_dim).to(device)
-sampler_lang.mission_encoder.load_state_dict(ckpt["mission_encoder"])
-sampler_lang.mission_encoder.eval()
-mission_encoder = sampler_lang.mission_encoder
+# Use SentenceTransformer encoder (frozen)
+mission_encoder = SentenceMissionEncoder(
+    model_name="all-MiniLM-L6-v2",
+    frozen=True,
+    normalize=True,
+    cache=True,
+    device=device
+)
+mission_encoder.eval()
+mission_encoder_output_dim = mission_encoder.output_dim
 preprocess_obs = sampler_lang.preprocess_obs
 
 dummy_obs, _ = env.reset()
@@ -184,21 +189,17 @@ mission_adapter.load_state_dict(ckpt["mission_adapter"])
 mission_adapter.eval()
 
 
-def get_language_adapted_params(policy, mission_str, mission_encoder, mission_adapter, vectorizer, device):
-    mission_vec = vectorizer.transform([mission_str]).toarray()[0]
-    mission_tensor = torch.from_numpy(mission_vec.astype(np.float32)).unsqueeze(0).to(device)
+def get_language_adapted_params(policy, mission_str, mission_encoder, mission_adapter, device):
     with torch.no_grad():
-        mission_emb = mission_encoder(mission_tensor)
-        mission_emb = mission_emb.to(device)
+        mission_emb = mission_encoder(mission_str).to(device)  # SentenceTransformer handles tokenization
         delta_thetas = mission_adapter(mission_emb)
-        delta_thetas = [delta * delta_theta  for delta in delta_thetas]
+        delta_thetas = [delta * delta_theta for delta in delta_thetas]
     policy_params = list(policy.parameters())
     param_names = list(dict(policy.named_parameters()).keys())
     theta_prime = OrderedDict(
         (name, param + delta.squeeze(0))
         for name, param, delta in zip(param_names, policy_params, delta_thetas)
     )
-
     return theta_prime
 
 
@@ -237,7 +238,7 @@ for i in range(N_MISSIONS):
     mission = random.choice(missions)
 
     # 1. Lang-adapted policy
-    theta_prime = get_language_adapted_params(policy_lang, mission, mission_encoder, mission_adapter, vectorizer, device)
+    theta_prime = get_language_adapted_params(policy_lang, mission, mission_encoder, mission_adapter, device)
     lang_steps = []
 
     for ep in range(N_EPISODES):
