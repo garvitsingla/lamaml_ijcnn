@@ -209,7 +209,9 @@ def evaluate_policy(env, policy,preprocess_obs=None, params=None, max_steps=max_
         obs, info = env.reset()
     steps = 0
     done = False
-    while not done and steps < max_steps:
+    # Use the environment's own max_steps attribute
+    env_max_steps = getattr(env.unwrapped, 'max_steps', float('inf'))
+    while not done and steps < env_max_steps:
         if render:
             env.render("human")
         obs_vec = preprocess_obs(obs)
@@ -227,8 +229,8 @@ def evaluate_policy(env, policy,preprocess_obs=None, params=None, max_steps=max_
 
 
 # Evaluation
-N_MISSIONS = 20
-N_EPISODES = 40
+N_MISSIONS = 10
+N_EPISODES = 20
 
 results_lang = []
 results_without_lang = []

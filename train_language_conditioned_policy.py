@@ -234,16 +234,16 @@ def main():
     # Save the trained meta-policy parameters
     torch.save({
         "policy": policy.state_dict()
-    }, f"lang_policy_model/lang_policy_{env_name}.pth")
+    }, f"lang_policy_model/lang_policy_{env_name}_{delta_theta}.pth")
 
 
-    # plot
-    env_dir = os.path.join("metrics", env_name)
-    os.makedirs(env_dir, exist_ok=True) 
+    # # plot
+    # env_dir = os.path.join("metrics", env_name)
+    # os.makedirs(env_dir, exist_ok=True) 
 
-    np.save(os.path.join(env_dir, "lang_conditioned_avg_steps.npy"), np.array(avg_steps_per_batch))
-    with open(os.path.join(env_dir, "lang_conditioned_meta.json"), "w") as f:
-        json.dump({"label" : "language-conditioned policy", "env" : env_name}, f)
+    # np.save(os.path.join(env_dir, "lang_conditioned_avg_steps.npy"), np.array(avg_steps_per_batch))
+    # with open(os.path.join(env_dir, "lang_conditioned_meta.json"), "w") as f:
+    #     json.dump({"label" : "language-conditioned policy", "env" : env_name}, f)
     
 
     # Plot the average steps per batch

@@ -57,6 +57,7 @@ p.add_argument("--max-steps", type=int, default=300)
 p.add_argument("--meta-iters", type=int, default=50, help="number of meta-batches")
 p.add_argument("--batch-size", type=int, default=50, help="episodes per meta-batch (per task)")
 p.add_argument("--num-workers", type=int, default=4)
+p.add_argument("--num-steps", type=int, default=1, help="number of inner loop gradient steps")
 
 args = p.parse_args()
 
@@ -142,6 +143,7 @@ def main():
     num_workers = args.num_workers
     num_batches = args.meta_iters
     batch_size = args.batch_size
+    num_steps = args.num_steps
 
 
     missions = select_missions(env_name)
@@ -204,7 +206,7 @@ def main():
         print(f"Meta-batch {batch+1}/{num_batches}")
         train_episodes, valid_episodes, step_counts = sampler.sample(
             meta_batch_size=meta_batch_size,
-            num_steps=1,
+            num_steps=num_steps,
             fast_lr=1e-4,
             gamma=0.99,
             gae_lambda=1.0,
@@ -230,17 +232,17 @@ def main():
     print(f"Total training time: {training_time:.2f} seconds")
 
     # Save the trained meta-policy parameters
-    ckpt_base = f"maml_model/maml_{env_name}"
+    ckpt_base = f"maml_model/maml_{env_name}_{num_steps}"
     torch.save(policy.state_dict(), ckpt_base + ".pth")
 
 
-    # plot
-    env_dir = os.path.join("metrics", env_name)
-    os.makedirs(env_dir, exist_ok=True) 
+    # # plot
+    # env_dir = os.path.join("metrics", env_name)
+    # os.makedirs(env_dir, exist_ok=True) 
 
-    np.save(os.path.join(env_dir, "maml_avg_steps.npy"), np.array(avg_steps_per_batch))
-    with open(os.path.join(env_dir, "maml_meta.json"), "w") as f:
-        json.dump({"label" : "MAML", "env" : env_name}, f)
+    # np.save(os.path.join(env_dir, "maml_avg_steps.npy"), np.array(avg_steps_per_batch))
+    # with open(os.path.join(env_dir, "maml_meta.json"), "w") as f:
+    #     json.dump({"label" : "MAML", "env" : env_name}, f)
     
 
     # Plot the average steps per batch

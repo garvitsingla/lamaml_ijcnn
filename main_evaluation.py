@@ -166,7 +166,7 @@ print(f"room_size: {room_size}\nnum_dists: {num_dists}\nmax_steps: {max_steps}\n
 
 
 
-ckpt = torch.load(f"lang_model/lang_{env_name}.pth", map_location=device)
+ckpt = torch.load(f"lang_model/lang_{env_name}_{delta_theta}.pth", map_location=device)
 
 dummy_obs, _ = env.reset()
 input_size_lang = sampler_lang.preprocess_obs(dummy_obs).shape[0]
@@ -267,7 +267,7 @@ def get_language_adapted_params(policy, mission_str, mission_encoder, mission_ad
     return theta_prime
 
 
-def adapt_policy_for_task(task, policy, num_steps=1, fast_lr=0.5, batch_size=10,baseline=None):
+def adapt_policy_for_task(task, policy, num_steps=1, fast_lr=1e-4, batch_size=10,baseline=None):
     
     env.reset_task(task)
     
@@ -359,7 +359,7 @@ for i in range(N_MISSIONS):
     results_lang.append(mean_lang)
 
     # 2. MAML policy
-    maml_params = adapt_policy_for_task(mission, policy_maml, num_steps=2, fast_lr=0.25, batch_size=10, baseline=baseline)
+    maml_params = adapt_policy_for_task(mission, policy_maml, num_steps=2, batch_size=10, baseline=baseline)
     maml_steps = []
     # print(f"\n MAML policy for mission {mission}:")
     for ep in range(N_EPISODES):
