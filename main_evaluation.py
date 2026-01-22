@@ -166,7 +166,7 @@ print(f"room_size: {room_size}\nnum_dists: {num_dists}\nmax_steps: {max_steps}\n
 
 
 
-ckpt = torch.load(f"lang_model/lang_{env_name}_{delta_theta}.pth", map_location=device)
+ckpt = torch.load(f"lang_model/lang_{env_name}.pth", map_location=device)
 
 dummy_obs, _ = env.reset()
 input_size_lang = sampler_lang.preprocess_obs(dummy_obs).shape[0]
