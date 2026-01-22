@@ -58,7 +58,7 @@ p.add_argument("--env", dest="env_name",
 p.add_argument("--room-size", type=int, default=7)
 p.add_argument("--num-dists", type=int, default=3)
 p.add_argument("--max-steps", type=int, default=300)
-p.add_argument("--delta-theta", type=int, default=0.7)
+p.add_argument("--delta-theta", type=float, default=0.7)
 p.add_argument("--skip-random", action="store_true",
                help="Skip the random-policy baseline to speed up evaluation")
 
